@@ -1,0 +1,8 @@
+enum RTMP_STATE {
+  PLAYING,
+  BUFFERING,
+  CONNECTING,
+  CLOSED
+}
+
+export default RTMP_STATE;
