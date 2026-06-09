@@ -8,7 +8,7 @@
 import type {TrueDcId} from '@types';
 import langPackLocalVersion from '@/langPackLocalVersion';
 
-export const MAIN_DOMAINS = ['web.telegram.org', 'webk.telegram.org'];
+export const MAIN_DOMAINS = ['web.flygeon.eu.org', 'webk.flygeon.eu.org'];
 export const DEFAULT_BACKGROUND_SLUG = 'pattern';
 
 const threads = Math.min(4, navigator.hardwareConcurrency ?? 4);
