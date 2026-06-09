@@ -465,13 +465,7 @@ export default class ChatInput {
     const fakeSelectionWrapper = this.fakeSelectionWrapper = document.createElement('div');
     fakeSelectionWrapper.classList.add('fake-wrapper', 'fake-selection-wrapper');
 
-    // Shared rounded surface behind every plate (input row / control / selection).
-    // Plates are transparent and cross-fade their content on top of it, so the
-    // background never disappears mid-transition.
-    const background = document.createElement('div');
-    background.classList.add('chat-input-background');
-
-    this.inputContainer.append(background, this.rowsWrapperWrapper, fakeRowsWrapper, fakeSelectionWrapper);
+    this.inputContainer.append(this.rowsWrapperWrapper, fakeRowsWrapper, fakeSelectionWrapper);
     this.chatInput.append(this.inputContainer);
 
     if(!this.excludeParts.downButton) {
@@ -1121,7 +1115,7 @@ export default class ChatInput {
       },
       verify: () => {
         if(this.editMsgId) return;
-        return (!this.chat.isMonoforum && this.chat.peerId.isAnyChat()) || this.chat.isBot;
+        return (!this.chat.isMonoforum && this.chat.peerId.isAnyChat()) || this.chat.isBot || this.chat.peerId === rootScope.myId;
       }
     }, {
       icon: 'checkround',
@@ -1143,19 +1137,6 @@ export default class ChatInput {
         showChecklistPopup({chat: this.chat});
       },
       verify: () => !this.editMsgId && !this.chat.isMonoforum
-    }, {
-      // Discoverable voice ↔ video switch, shown only in the idle record state
-      // (empty field). Mirrors the record-button context menu: only the option
-      // you're NOT currently in is shown.
-      icon: 'videocamera_filled',
-      text: 'Chat.Input.Record.Video',
-      onClick: () => this.recordingController.setRecordingMediaType('video'),
-      verify: () => this.recordingController.canSwitchRecordingMode() && this.recordingController.getActiveRecordingMediaType() !== 'video'
-    }, {
-      icon: 'microphone_filled',
-      text: 'Chat.Input.Record.Voice',
-      onClick: () => this.recordingController.setRecordingMediaType('voice'),
-      verify: () => this.recordingController.canSwitchRecordingMode() && this.recordingController.getActiveRecordingMediaType() !== 'voice'
     }];
 
     const attachMenuButtons = this.attachMenuButtons.slice();
@@ -1274,7 +1255,7 @@ export default class ChatInput {
       ['schedule', 'schedule'],
       ['check', 'edit'],
       ['microphone_filled', 'record'],
-      ['videocamera_filled', 'record-video'],
+      ['recordround', 'record-video'],
       ['forward_filled', 'forward']
     ];
     this.btnSend.append(...icons.map(([name, type]) => Icon(name, 'animated-button-icon-icon', 'btn-send-icon-' + type)));
@@ -1538,8 +1519,10 @@ export default class ChatInput {
       if(this.chat.threadId !== threadId || this.chat.monoforumThreadId !== monoforumThreadId || this.chat.peerId !== peerId || PEER_EXCEPTIONS.has(this.chat.type)) return;
       if(!draft) {
         // a pending local save means the user is actively typing newer content —
-        // let it win and sync normally instead of clobbering it with the remote clear
-        if(this.saveDraftDebounced.isDebounced()) return;
+        // let it win and sync normally instead of clobbering it with the remote clear.
+        // but a forced clear is our OWN send completing (clearDraft: true), so always
+        // honour it — otherwise the input never clears after sending while typing.
+        if(!force && this.saveDraftDebounced.isDebounced()) return;
         this.saveDraftDebounced.clearTimeout();
       }
       this.setDraft(draft, true, force);
@@ -3078,7 +3061,10 @@ export default class ChatInput {
       // * so have to reset formatting
       if(document.activeElement === this.messageInput && !IS_MOBILE) {
         setTimeout(() => {
-          if(document.activeElement === this.messageInput) {
+          // * re-check emptiness: a replace-style IME (e.g. Vietnamese Telex 'dd' -> 'đ') emits the
+          // * delete (empty input) and the insert in the same task, so the input is filled again by
+          // * the time this fires. wiping it here would eat the just-composed character
+          if(document.activeElement === this.messageInput && this.isInputEmpty()) {
             this.messageInput.textContent = '1';
             placeCaretAtEnd(this.messageInput);
             this.messageInput.textContent = '';
@@ -3422,7 +3408,7 @@ export default class ChatInput {
         this.stickersHelper &&
         this.chat.appSettings.stickers.suggest !== 'none' &&
         await this.chat.canSend('send_stickers') &&
-        entity?._ === 'messageEntityEmoji' &&
+        (entity?._ === 'messageEntityEmoji' || entity?._ === 'messageEntityCustomEmoji') &&
         entity.length === value.length &&
         !entity.offset
       ) {
@@ -4144,7 +4130,7 @@ export default class ChatInput {
     paidMessageInterceptor
   }: {
     sendingParams: MessageSendingParams,
-    inputField: InputFieldAnimated,
+    inputField?: InputFieldAnimated,
     chatType?: ChatType,
     forwarding?: ChatInput['forwarding'],
     sendTextParams?: Parameters<AppMessagesManager['sendText']>[0],
@@ -4152,7 +4138,9 @@ export default class ChatInput {
     slowModeParams: Pick<Parameters<typeof ChatInput['showSlowModeTooltipIfNeeded']>[0], 'peerId' | 'managers' | 'element'>,
     paidMessageInterceptor?: PaidMessagesInterceptor
   }) {
-    const {value, entities} = getRichValueWithCaret(inputField.input, true, false);
+    const {value, entities} = inputField ?
+      getRichValueWithCaret(inputField.input, true, false) :
+      {value: '', entities: [] as MessageEntity[]};
     const trimmedValue = value.trim();
 
     let messageCount = 0;

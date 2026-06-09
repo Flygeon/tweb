@@ -26,7 +26,7 @@ import formatStarsAmount from '@appManagers/utils/payments/formatStarsAmount';
 import {getPriceChangedActionMessageLangParams} from '@lib/lang';
 import {numberThousandSplitterForStars} from '@helpers/number/numberThousandSplitter';
 import {getCollectibleName} from '@appManagers/utils/gifts/getCollectibleName';
-import {truncateTextWithEntities} from '@helpers/string/truncateTextWithEntities';
+import {truncateTextWithEntities} from '@lib/richTextProcessor/truncateTextWithEntities';
 
 async function wrapLinkToMessage(options: WrapMessageForReplyOptions) {
   const wrapped = await wrapMessageForReply(options);
@@ -453,6 +453,15 @@ export default async function wrapMessageActionTextNewUnsafe(options: WrapMessag
       case 'messageActionChannelEditVideo':
       case 'messageActionChannelDeletePhoto': {
         args = [getNameDivHTML(message.fromId, plain)];
+        break;
+      }
+
+      case 'messageActionSuggestProfilePhoto': {
+        const isOutgoing = message.fromId === rootScope.myId;
+        langPackKey = isOutgoing ?
+          'Action.YouSuggestedProfilePhoto' :
+          'Action.SuggestedProfilePhoto';
+        args = isOutgoing ? [getNameDivHTML(message.peerId, plain)] : [getNameDivHTML(message.fromId, plain)];
         break;
       }
 

@@ -374,17 +374,27 @@
 	// the handheld value (8px) already gives the chat its breathing room
 	// without a SCSS @media override here.
 
-	// Only shift the chat off the left bar once the viewport is wide enough that the
-	// chat content (--chat-width) plus the left bar + gap + outer paddings
-	// actually fit — otherwise the shift just pushes chat content past the right edge.
-	// --folders-sidebar-offset (0 normally, ~5.5rem when folders panel is shown) is
-	// folded into the left side so chat content stays centered past the panel too.
-	@include respond-to(medium-screens) {
-		transform: translateX(calc((var(--folders-sidebar-offset) + var(--left-column-width)) / 2 * var(--reflect)));
+	// #column-center spans the whole middle area; the chat-content plates inside
+	// it (topbar / pinned / chat-input) are capped to --chat-width and centred
+	// via max-width + margin:auto. (The bubbles scroll container instead fills
+	// the full middle zone so it scrolls edge-to-edge — see .bubbles — but its
+	// messages are likewise centred at --chat-width.) Centre that content in the
+	// space to the right of the docked left bar — at every width above the
+	// floating-drawer range.
+	// #column-center is inset by --page-chats-padding on its right edge, which
+	// alone would centre the chat in [bar, viewport − inset] and leave the right
+	// gap a padding wider than the left; the extra + --page-chats-padding in the
+	// shift compensates so the chat sits symmetrically between the bar and the
+	// viewport edge. JS clamps --chat-width to the same space so it never spills
+	// past the edge. --folders-sidebar-offset (0 normally, 80px when folders
+	// panel is shown) is folded into the left side so chat content stays centered
+	// past the panel too.
+	@include respond-to(no-floating-left-sidebar) {
+		transform: translateX(calc((var(--folders-sidebar-offset) + var(--left-column-width) + var(--page-chats-padding)) / 2 * var(--reflect)));
 		transition: transform var(--transition-standard-out);
 	}
 
-	@include respond-to(medium-screens) {
+	@include respond-to(no-floating-left-sidebar) {
 		body.is-right-column-shown:not(.right-column-floats) & {
 			transform: translateX(calc((var(--folders-sidebar-offset) + var(--left-column-width) - var(--right-column-width)) / 2 * var(--reflect)));
 			transition: transform var(--transition-standard-in);
@@ -435,6 +445,7 @@
   --pinned-floating-height: 0px;
   --chat-padding-top: calc(var(--chat-topbar-height) + var(--page-chats-padding) + var(--pinned-floating-height));
   --chat-padding-bottom: calc(var(--chat-input-height) + var(--page-chats-padding) + var(--chat-input-height-surplus));
+  --chat-input-background: var(--surface-color);
 	display: flex !important;
 	width: 100%;
 	align-items: center;
@@ -497,27 +508,14 @@
 	width: 100%;
 	max-width: 100%;
 	justify-content: center;
+  background: var(--chat-input-background);
 	border-radius: var(--chat-input-border-radius);
 	min-height: var(--chat-input-height);
 	max-height: 30rem;
 	flex: 0 0 auto;
 	position: relative;
 	z-index: 3;
-}
-
-// Shared rounded surface that sits behind every footer plate (input row,
-// control container, selection). Plates themselves are transparent and only
-// cross-fade their content, so they never fade into emptiness.
-.chat-input-background {
-  position: absolute;
-  inset-inline: 0;
-  top: 0;
-  bottom: 0;
-  border-radius: var(--chat-input-border-radius);
-  background-color: var(--surface-color);
   box-shadow: $chat-input-box-shadow;
-  z-index: 2;
-  pointer-events: none;
 }
 
 .chat-input-control {
@@ -806,9 +804,9 @@
   }
 
 	.new-message-wrapper {
-    --send-as-size: 1.875rem;
-    --send-as-margin-left: .25rem;
-    --send-as-margin-right: .375rem;
+    --send-as-size: 2.5rem;
+    --send-as-margin-left: 0rem;
+    --send-as-margin-right: .25rem;
     --send-as-total-size: calc(var(--send-as-size) + var(--send-as-margin-left) + var(--send-as-margin-right));
     --commands-size: 2.375rem;
     --commands-margin-left: 0rem;
@@ -886,43 +884,6 @@
         // margin: 0 0.375rem .4375rem var(--send-as-margin-left);
         margin-inline-start: var(--send-as-margin-left);
         background: none !important;
-
-        .btn-menu {
-          max-height: 20rem;
-          max-width: 20rem;
-          top: auto;
-          inset-inline-end: auto;
-          inset-inline-start: calc(var(--padding-horizontal) * -1 - .25rem) !important;
-          width: auto;
-          height: auto;
-          // transform: scale3d(1, 1, 1);
-
-          &-item {
-            height: 2.25rem;
-
-            &-header {
-              height: 1.875rem;
-            }
-
-            &-icon {
-              margin-inline-end: calc(var(--icon-margin) - .5rem);
-            }
-
-            &-text {
-              @include text-overflow();
-              // font-size: .875rem !important;
-              line-height: 1 !important;
-              display: flex;
-              flex-direction: column;
-              justify-content: center;
-            }
-
-            &-subtitle {
-              font-size: .8125rem;
-              font-weight: 400;
-            }
-          }
-        }
       }
 
       &-avatar {
@@ -1097,7 +1058,17 @@
 
 .bubbles {
 	--translateY: 0;
-	inset-inline: -.5rem;
+	// The scroll container spans the FULL visible middle zone — from the left
+	// card's edge to the page edge (or the docked right column) — so the chat
+	// scrolls edge-to-edge and the scrollbar sits right at the edge. No gutter,
+	// no padding. #column-center is full-middle-width but translateX-centred (to
+	// drop the chat content into the gap), so these insets are *symmetric* values
+	// that counter that shift to reach the real edges: symmetric keeps .bubbles
+	// centred within #column-center, so the centred messages don't move — only
+	// the scroll region widens. They mirror the #column-center translateX
+	// formulas above. Base = handheld / floating-drawer range (the left bar
+	// overlays, so the chat fills the whole content box).
+	inset-inline: calc(var(--page-chats-padding) * -1);
 	flex: 1 1 auto;
 	position: absolute;
   inset-block: calc(var(--page-chats-padding) * -1);
@@ -1105,6 +1076,17 @@
 
 	transform: translate3d(0, var(--translateY), 0);
 	transition: transform var(--transition-standard-out);
+
+	// Docked-left range: counter #column-center's centring shift so the scroll
+	// area reaches the real edges — the page edge when the right column is
+	// closed/floating, or the docked right column's inner edge when it's shown.
+	@include respond-to(no-floating-left-sidebar) {
+		inset-inline: calc((var(--folders-sidebar-offset) + var(--left-column-width) - var(--page-chats-padding)) / 2);
+
+		body.is-right-column-shown:not(.right-column-floats) & {
+			inset-inline: calc((var(--folders-sidebar-offset) + var(--left-column-width) + var(--right-column-width)) / 2);
+		}
+	}
 
 	@include animation-level(0) {
 		transition: none !important;
@@ -1246,9 +1228,9 @@
 		transition: none !important;
 	}
 
-	body:not(.right-column-floats) & {
-		width: calc(100% - var(--right-column-width));
-	}
+	// (No right-column subtraction here: .bubbles spans the full middle zone and
+	// the inner is centred within it via max-width + margin:auto, which keeps the
+	// messages in the gap, clear of the docked right column.)
 
 	&.is-chat .is-in/* ,
   .bubbles-group-sponsored */ {
@@ -1467,4 +1449,42 @@
   position: absolute;
   inset-inline-end: 4px;
   top: 4px;
+}
+
+.new-message-send-as {
+  &-menu {
+    max-height: 20rem !important;
+    max-width: 20rem !important;
+    width: auto !important;
+    height: auto !important;
+
+    $parent: ".btn-menu";
+    #{$parent} {
+      &-item {
+        height: 2.25rem;
+
+        &-header {
+          height: 1.875rem;
+        }
+
+        &-icon {
+          margin-inline-end: calc(var(--icon-margin) - .5rem);
+        }
+
+        &-text {
+          @include text-overflow();
+          // font-size: .875rem !important;
+          line-height: 1 !important;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+        }
+
+        &-subtitle {
+          font-size: .8125rem;
+          font-weight: 400;
+        }
+      }
+    }
+  }
 }

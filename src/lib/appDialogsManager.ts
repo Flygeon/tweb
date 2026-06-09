@@ -24,7 +24,7 @@ import I18n, {FormatterArguments, i18n, LangPackKey, _i18n} from '@lib/langPack'
 import findUpTag from '@helpers/dom/findUpTag';
 import lottieLoader from '@rlottie/lottieLoader';
 import wrapPhoto from '@components/wrappers/photo';
-import AppEditFolderTab from '@components/sidebarLeft/tabs/editFolder';
+import {AppEditFolderTab} from '@components/solidJsTabs/tabs';
 import appSidebarLeft from '@components/sidebarLeft';
 import {attachClickEvent, simulateClickEvent} from '@helpers/dom/clickEvent';
 import positionElementByIndex from '@helpers/dom/positionElementByIndex';
@@ -71,11 +71,11 @@ import Row, {RowMediaSizeType} from '@components/row'
 import SettingSection from '@components/settingSection';
 import getMessageThreadId from '@appManagers/utils/messages/getMessageThreadId';
 import formatNumber from '@helpers/number/formatNumber';
-import AppSharedMediaTab from '@components/sidebarRight/tabs/sharedMedia';
+import AppSharedMediaTab from '@components/sidebarRight/tabs/sharedMediaTab';
 import {dispatchHeavyAnimationEvent} from '@hooks/useHeavyAnimationCheck';
 import shake from '@helpers/dom/shake';
 import getServerMessageId from '@appManagers/utils/messageId/getServerMessageId';
-import AppChatFoldersTab from '@components/sidebarLeft/tabs/chatFolders';
+import {AppChatFoldersTab} from '@components/solidJsTabs/tabs';
 import eachTimeout from '@helpers/eachTimeout';
 import PopupSharedFolderInvite from '@components/popups/sharedFolderInvite';
 import showChatPreviewPopup, {chatPreviewAnchorFromDialogRow} from '@components/popups/chatPreview';
@@ -110,6 +110,10 @@ import {children, createRoot, untrack} from 'solid-js';
 import useFolders from '@stores/folders';
 import FoldersTabs from '@components/foldersTabs';
 import clamp from '@helpers/number/clamp';
+import confirmationPopup from '@components/confirmationPopup';
+import ListenerSetter from '@helpers/listenerSetter';
+import type PopupPeer from '@components/popups/peer';
+import {toastNew} from '@components/toast';
 
 
 export const DIALOG_LIST_ELEMENT_TAG = 'A';
@@ -262,6 +266,9 @@ export class DialogElement extends Row {
       peerId: fromName ? NULL_PEER_ID : usePeerId,
       peerTitle: fromName,
       withStories,
+      // Animate video avatars only in the primary chat list (withStories), not
+      // in compact pickers / search rows.
+      withVideoAvatar: withStories,
       wrapOptions: newWrapOptions,
       meAsNotes: isSavedDialog,
       asAllChats: asAllChats === 'monoforum',
@@ -680,6 +687,10 @@ export class AppDialogsManager {
     const [appSettings, setAppSettings] = useAppSettings();
     // * it should've had a better place :(
     appMediaPlaybackController.setPlaybackParams(unwrap(appSettings.playbackParams));
+    // Persist the normalized params back once — `setPlaybackParams` clamps a stale >1
+    // `volume` to [0, 1] and migrates the excess into the voice-only `boost`, so this
+    // rewrites a corrupted stored value (e.g. volume: 1.04) instead of waiting for a change.
+    setAppSettings('playbackParams', appMediaPlaybackController.getPlaybackParams());
     appMediaPlaybackController.addEventListener('playbackParams', (params) => {
       setAppSettings('playbackParams', params);
     });
@@ -696,6 +707,7 @@ export class AppDialogsManager {
 
     PopupElement.MANAGERS = PopupElementTsx.MANAGERS = rootScope.managers = managers;
     appDownloadManager.construct(managers);
+    appDownloadManager.showPollCancelConfirmation = (randomId: string) => this.showPollCancelConfirmation(randomId);
     appSidebarLeft.construct(managers);
     appSidebarRight.construct(managers);
     groupCallsController.construct(managers);
@@ -722,12 +734,12 @@ export class AppDialogsManager {
 
     const {setSelectedFolderId, onClick, setOnClick, folderItems} = useFolders();
     const selectFolderByIndex = async(index: number) => {
-      const id = folderItems[index].filter.id;
+      const id = folderItems[index]?.filter.id ?? FOLDER_ID_ALL;
       const wasFilterId = this.filterId;
 
       const available = wasFilterId === -1 ||
         REAL_FOLDERS.has(id) ||
-        await rootScope.managers.filtersStorage.isFilterIdAvailable(id);
+        (await rootScope.managers.filtersStorage.isFilterIdAvailable(id) ?? true);
       if(!available) {
         showLimitPopup('folders');
         return false;
@@ -1392,9 +1404,8 @@ export class AppDialogsManager {
       });
 
       attachClickEvent(button, async() => {
-        const tab = appSidebarLeft.createTab(AppEditFolderTab);
-        tab.setInitFilter(await this.managers.filtersStorage.getFilter(this.filterId));
-        tab.open();
+        const filter = await this.managers.filtersStorage.getFilter(this.filterId);
+        appSidebarLeft.createTab(AppEditFolderTab).open({...AppEditFolderTab.getInitArgs(), initFilter: filter});
       });
 
       placeholderContainer.append(button);
@@ -2620,6 +2631,43 @@ export class AppDialogsManager {
 
     return d;
     // return this.addDialog(options.peerId, options.container, options.rippleEnabled, options.onlyFirstName, options.meAsSaved, options.append, options.avatarSize, options.autonomous, options.lazyLoadQueue, options.loadPromises, options.fromName, options.noIcons);
+  }
+
+  private showPollCancelConfirmation(randomId: string) {
+    const listenerSetter = new ListenerSetter;
+    let popup: PopupPeer;
+
+    const onSent = () => {
+      toastNew({
+        langPackKey: 'CancelPollConfirm.Timeout'
+      });
+    }
+
+    listenerSetter.add(rootScope)('message_sent', ({tempMessage}) => {
+      if(tempMessage?.random_id === randomId) {
+        popup?.hide();
+        onSent();
+      }
+    });
+
+    confirmationPopup({
+      titleLangKey: 'CancelPollConfirm.Title',
+      descriptionLangKey: 'CancelPollConfirm.Description',
+      button: {
+        langKey: 'CancelPollConfirm.Button'
+      },
+      onPopup: (p) => {
+        popup = p;
+      }
+    }).then(() => {
+      this.managers.appMessagesManager.cancelPendingMessage(randomId).then((wasCanceled) => {
+        if(!wasCanceled) {
+          onSent();
+        }
+      });
+    }, noop).finally(() => {
+      listenerSetter.removeAll();
+    });
   }
 }
 

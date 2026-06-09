@@ -262,6 +262,21 @@ export default function updateColumnWidths(): void {
   const vw = window.innerWidth;
   const isMobile = mediaSizes.isMobile;
 
+  // `html` carries the iOS safe-area inset as horizontal padding
+  // (`min(16px, env(safe-area-inset-*))` per side — see base.scss). `vw`
+  // counts the full viewport including that padding, but every column lays
+  // out inside html's content box, which is narrower by up to 32px in
+  // landscape (both insets). Use this content-box width (not `vw`) for the
+  // horizontal space math below so the chat is sized for the box it actually
+  // renders in — otherwise the symmetric gap JS centres the chat into is
+  // computed against a wider viewport than exists and collapses against the
+  // left bar on landscape iPhones (the inset is 0 on desktop, so this is a
+  // no-op there). Read with the other reads at the top to avoid interleaving
+  // a style read between the setProperty writes below (layout thrash).
+  const rootStyle = getComputedStyle(root);
+  const safeAreaPaddingX = (parseFloat(rootStyle.paddingLeft) || 0) + (parseFloat(rootStyle.paddingRight) || 0);
+  const availableWidth = vw - safeAreaPaddingX;
+
   const defaultColumnWidth = Math.min(vw, DEFAULT_COLUMN_WIDTH);
   const visualLeftWidth = computeVisualLeftWidth();
   const layoutLeftWidth = computeLayoutLeftWidth();
@@ -277,14 +292,25 @@ export default function updateColumnWidths(): void {
   // `.bubbles-inner { width: calc(100% - var(--right-column-width) ...) }`
   // rule in _chat.scss subtracts the right column from the chat width,
   // collapsing the messages column to 0 / a tiny centered strip.
-  const floats = isMobile || vw < rightColumnFits;
-  const middleWidth = isMobile ? vw : vw - PAGE_CHATS_PADDING * 2;
-  // Chat content max width — fills the viewport on handheld (single-
-  // column slider) and caps at CHAT_WIDTH_MAX otherwise. On narrower
-  // desktop viewports where the middle column is tighter than the cap,
-  // shrink to match so SCSS `max-width: var(--chat-width)` rules don't
-  // overshoot the available space.
-  const chatWidth = isMobile ? vw : Math.min(middleWidth, CHAT_WIDTH_MAX);
+  const floats = isMobile || availableWidth < rightColumnFits;
+  const middleWidth = isMobile ? vw : availableWidth - PAGE_CHATS_PADDING * 2;
+  // Chat content max width — fills the viewport on handheld (single-column
+  // slider) and caps at CHAT_WIDTH_MAX otherwise. It also never exceeds the
+  // space actually free beside the left column: in the docked-left range
+  // (>925px) the left column + folders panel sit in-flow and the chat is
+  // centred in the gap to their right (see #column-center translateX in
+  // _chat.scss). Subtract them plus 3 paddings — the page's left inset and the
+  // two 16px gutters that flank the chat once it's clamped — so the chat keeps
+  // a symmetric gap on both sides and a wide/resized left column reclaims width
+  // from it. Uses availableWidth (not vw) so the iOS safe-area inset doesn't
+  // eat the left gap on landscape iPhones. In the floating-drawer range
+  // (601-925) and on mobile the left column overlays the chat, which keeps
+  // full width.
+  const isFloatingLeft = mediaSizes.isLessThanFloatingLeftSidebar && !isMobile;
+  const chatAvailableWidth = (isMobile || isFloatingLeft) ?
+    middleWidth :
+    availableWidth - foldersOffset - layoutLeftWidth - PAGE_CHATS_PADDING * 3;
+  const chatWidth = isMobile ? vw : Math.min(chatAvailableWidth, CHAT_WIDTH_MAX);
   // Viewport threshold at which the right column can dock at default size
   // without overlapping a CHAT_WIDTH_MAX chat. Exposed for any caller that
   // wants to read the same number JS uses for `body.right-column-floats`.

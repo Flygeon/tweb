@@ -22,12 +22,6 @@ body.is-pinned-audio-shown, body.is-calling.forwards {
   }
 }
 
-body.is-right-column-shown {
-  @include respond-to(medium-screens) {
-    --topbar-floating-scaleX: calc(1 - var(--right-column-proportion));
-  }
-}
-
 .topbar {
   --topbar-avatar-active-size: 0px;
   --topbar-close-active-size: 2.5rem;
@@ -114,7 +108,7 @@ body.is-right-column-shown {
 	.user-title {
 		font-size: 1rem;
 		line-height: 1.5rem;
-		max-width: calc(100% - 1.5rem);
+		max-width: calc(100% - 0.5rem);
 		display: flex;
 		align-items: center;
     font-weight: var(--font-weight-bold);
@@ -126,10 +120,10 @@ body.is-right-column-shown {
 
 	.peer-title,
 	.info {
-		white-space: nowrap;
-		text-overflow: ellipsis;
+    @include text-overflow();
 		min-width: 0;
 		line-height: var(--line-height);
+    max-width: 100%;
 	}
 
 	.btn-menu-toggle {
@@ -141,6 +135,7 @@ body.is-right-column-shown {
 	.chat-info {
 		flex: 1 1 auto;
 		padding-inline-start: 49px;
+    width: 1px; // * fix width
 
     &-container {
       display: flex;

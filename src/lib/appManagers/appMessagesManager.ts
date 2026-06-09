@@ -14,7 +14,7 @@ import LazyLoadQueueBase from '@components/lazyLoadQueueBase';
 import deferredPromise, {CancellablePromise} from '@helpers/cancellablePromise';
 import tsNow from '@helpers/tsNow';
 import {nextRandomUint, randomLong} from '@helpers/random';
-import {Chat, ChatFull, Dialog as MTDialog, DialogPeer, DocumentAttribute, InputMedia, InputMessage, InputPeerNotifySettings, InputSingleMedia, Message, MessageAction, MessageEntity, MessageFwdHeader, MessageMedia, MessageReplies, MessageReplyHeader, MessagesDialogs, MessagesFilter, MessagesMessages, MethodDeclMap,  PeerNotifySettings, PhotoSize, SendMessageAction, Update, Photo, Updates, ReplyMarkup, InputPeer, InputPhoto, InputDocument, WebPage, GeoPoint, InputChannel, InputDialogPeer, ReactionCount, MessagePeerReaction, MessagesSearchCounter, Peer, MessageReactions, Document, InputFile, Reaction, ForumTopic as MTForumTopic, MessagesForumTopics, MessagesGetReplies, MessagesGetHistory, MessagesAffectedHistory,  MessagesTranscribedAudio, ReadParticipantDate, WebDocument, MessagesSearch, MessagesSearchGlobal, InputReplyTo, MessagesSendMessage, MessagesSendMedia, MessagesGetSavedHistory, MessagesSavedDialogs, SavedDialog as MTSavedDialog, User, MissingInvitee, TextWithEntities, ChannelsSearchPosts, FactCheck, MessageExtendedMedia, SponsoredMessage, MessagesSponsoredMessages, InputGroupCall, TodoItem, TodoCompletion, SearchPostsFlood,  MessagesDeleteSavedHistory, ChannelsDeleteParticipantHistory, MessagesDeleteHistory, MessagesDeleteTopicHistory} from '@layer';
+import {Chat, ChatFull, Dialog as MTDialog, DialogPeer, DocumentAttribute, InputMedia, InputMessage, InputMessageReadMetric, InputPeerNotifySettings, InputSingleMedia, Message, MessageAction, MessageEntity, MessageFwdHeader, MessageMedia, MessageReplies, MessageReplyHeader, MessagesDialogs, MessagesFilter, MessagesMessages, MethodDeclMap,  PeerNotifySettings, PhotoSize, SendMessageAction, Update, Photo, Updates, ReplyMarkup, InputPeer, InputPhoto, InputDocument, WebPage, GeoPoint, InputChannel, InputDialogPeer, ReactionCount, MessagePeerReaction, MessagesSearchCounter, Peer, MessageReactions, Document, InputFile, Reaction, ForumTopic as MTForumTopic, MessagesForumTopics, MessagesGetReplies, MessagesGetHistory, MessagesAffectedHistory,  MessagesTranscribedAudio, ReadParticipantDate, WebDocument, MessagesSearch, MessagesSearchGlobal, InputReplyTo, MessagesSendMessage, MessagesSendMedia, MessagesGetSavedHistory, MessagesSavedDialogs, SavedDialog as MTSavedDialog, User, MissingInvitee, TextWithEntities, ChannelsSearchPosts, FactCheck, MessageExtendedMedia, SponsoredMessage, MessagesSponsoredMessages, InputGroupCall, TodoItem, TodoCompletion, SearchPostsFlood,  MessagesDeleteSavedHistory, ChannelsDeleteParticipantHistory, MessagesDeleteHistory, MessagesDeleteTopicHistory} from '@layer';
 import {ArgumentTypes, InvokeApiOptions, Modify} from '@types';
 import {logger, LogTypes} from '@lib/logger';
 import {ReferenceContext} from '@lib/storages/references';
@@ -335,6 +335,7 @@ type UploadThumbAndCoverArgs = {
   peer: InputPeer,
   blob: Blob,
   isCover: boolean
+  onUploadPromise?: (promise: CancellablePromise<InputFile>) => void
 };
 
 type UploadVideoCoverArgs = {
@@ -488,6 +489,7 @@ type UploadMediaFileArgs =
     file: File | Blob;
 
     onUploadDeferred?: (deferred: CancellablePromise<any>) => void;
+    onThumbnailUploadDeferred?: (deferred: CancellablePromise<any>) => void;
   };
 
 type InvokeEditMessageMediaArgs = {
@@ -1101,7 +1103,7 @@ export class AppMessagesManager extends AppManager {
     sentDeferred.notifyAll({done: 0, total: file.size});
   }
 
-  public async uploadMediaFile({peerId, file, uploadingFileName, fileType, apiFileName, attachType, attributes, objectURL, thumb, spoiler, actionName, onUploadDeferred}: UploadMediaFileArgs) {
+  public async uploadMediaFile({peerId, file, uploadingFileName, fileType, apiFileName, attachType, attributes, objectURL, thumb, spoiler, actionName, onUploadDeferred, onThumbnailUploadDeferred}: UploadMediaFileArgs) {
     const uploadPromise = this.apiFileManager.upload({file, fileName: uploadingFileName});
     onUploadDeferred?.(uploadPromise);
 
@@ -1110,7 +1112,8 @@ export class AppMessagesManager extends AppManager {
       thumbUploadPromise = this.uploadThumbAndCover({
         blob: thumb.blob,
         isCover: !!thumb.isCover,
-        peer: this.appPeersManager.getInputPeerById(peerId)
+        peer: this.appPeersManager.getInputPeerById(peerId),
+        onUploadPromise: onThumbnailUploadDeferred
       });
     }
 
@@ -2083,8 +2086,11 @@ export class AppMessagesManager extends AppManager {
     };
   }
 
-  private async uploadThumbAndCover({blob, isCover, peer}: UploadThumbAndCoverArgs) {
-    const file = await this.apiFileManager.upload({file: blob});
+  private async uploadThumbAndCover({blob, isCover, peer, onUploadPromise}: UploadThumbAndCoverArgs) {
+    const promise = this.apiFileManager.upload({file: blob});
+    onUploadPromise?.(promise);
+
+    const file = await promise;
 
     if(!isCover) return {file};
 
@@ -3300,6 +3306,13 @@ export class AppMessagesManager extends AppManager {
     if(pendingData) {
       const {peerId, tempId, storage} = pendingData;
       const historyStorage = this.getHistoryStorage(peerId);
+
+      const tempMessage = this.getMessageFromStorage(storage, tempId);
+
+      if(tempMessage?._ === 'message' && tempMessage?.media?._ === 'messageMediaPoll') {
+        const pollId = tempMessage.media.poll.id;
+        this.appPollsManager.runUploadingCancelCallbacksForPoll(pollId);
+      }
 
       if(this.appPeersManager.isChannel(peerId)) {
         this.apiUpdatesManager.processLocalUpdate({
@@ -4766,6 +4779,7 @@ export class AppMessagesManager extends AppManager {
     ])
     .then(([state, pinned]) => {
       state.hiddenPinnedMessages[peerId] = pinned.maxId;
+      this.appStateManager.pushToState('hiddenPinnedMessages', state.hiddenPinnedMessages);
       this.rootScope.dispatchEvent('peer_pinned_hidden', {peerId, maxId: pinned.maxId});
     });
   }
@@ -8785,7 +8799,6 @@ export class AppMessagesManager extends AppManager {
         }
 
         const prevPollId = tempMessage.media.poll.id;
-        this.appPollsManager.deleteUploadingFileNamesForPoll(prevPollId);
         delete this.appPollsManager.polls[prevPollId];
         delete this.appPollsManager.results[prevPollId];
 
@@ -10466,6 +10479,7 @@ export class AppMessagesManager extends AppManager {
     }
     this.appStateManager.getState().then((state) => {
       delete state.hiddenPinnedMessages[peerId];
+      this.appStateManager.pushToState('hiddenPinnedMessages', state.hiddenPinnedMessages);
       this.rootScope.dispatchEvent('peer_pinned_messages', {peerId, mids, pinned});
     });
   }
@@ -10543,10 +10557,16 @@ export class AppMessagesManager extends AppManager {
     });
   }
 
-  public sendBotRequestedPeer(peerId: PeerId, mid: number, buttonId: number, requestedPeerIds: PeerId[]) {
+  public sendBotRequestedPeer(
+    peerId: PeerId,
+    buttonId: number,
+    requestedPeerIds: PeerId[],
+    source: {mid: number} | {webappReqId: string}
+  ) {
     return this.apiManager.invokeApi('messages.sendBotRequestedPeer', {
       peer: this.appPeersManager.getInputPeerById(peerId),
-      msg_id: getServerMessageId(mid),
+      msg_id: 'mid' in source ? getServerMessageId(source.mid) : undefined,
+      webapp_req_id: 'webappReqId' in source ? source.webappReqId : undefined,
       button_id: buttonId,
       requested_peers: requestedPeerIds.map((peerId) => this.appPeersManager.getInputPeerById(peerId))
     }).then((updates) => {
@@ -10559,6 +10579,48 @@ export class AppMessagesManager extends AppManager {
       peer: this.appPeersManager.getInputPeerById(peerId)
     });
   }
+
+  public reportMusicListen(id: InputDocument, listenedDuration: number) {
+    return this.apiManager.invokeApi('messages.reportMusicListen', {
+      id,
+      listened_duration: listenedDuration
+    });
+  }
+
+  private readMetricsPending: Map<PeerId, Omit<InputMessageReadMetric.inputMessageReadMetric, '_'>[]> = new Map();
+  private readMetricsFlushTimeout: number;
+
+  // Enqueues a finalized post-engagement metric (msg_id is a local mid, converted on flush) and
+  // batches per-peer sends of messages.reportReadMetrics, mirroring tdesktop's 5s flush window.
+  public reportReadMetrics(peerId: PeerId, metric: Omit<InputMessageReadMetric.inputMessageReadMetric, '_'>) {
+    let metrics = this.readMetricsPending.get(peerId);
+    if(!metrics) {
+      this.readMetricsPending.set(peerId, metrics = []);
+    }
+
+    metrics.push(metric);
+
+    if(this.readMetricsFlushTimeout === undefined) {
+      this.readMetricsFlushTimeout = ctx.setTimeout(this.flushReadMetrics, 5000);
+    }
+  }
+
+  private flushReadMetrics = () => {
+    this.readMetricsFlushTimeout = undefined;
+    const pending = this.readMetricsPending;
+    this.readMetricsPending = new Map();
+
+    pending.forEach((metrics, peerId) => {
+      this.apiManager.invokeApi('messages.reportReadMetrics', {
+        peer: this.appPeersManager.getInputPeerById(peerId),
+        metrics: metrics.map((metric) => ({
+          ...metric,
+          _: 'inputMessageReadMetric',
+          msg_id: getServerMessageId(metric.msg_id)
+        })) as InputMessageReadMetric[]
+      }).catch(() => {});
+    });
+  };
 
   private processFactCheckBatch = async(batch: AppMessagesManager['factCheckBatcher']['batchMap']) => {
     for(const [peerId, midsMap] of batch) {

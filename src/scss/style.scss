@@ -82,6 +82,7 @@
 @use "partials/popups/popup";
 @use "partials/popups/editAvatar";
 @use "partials/popups/mediaAttacher";
+@use "partials/popups/createContact";
 @use "partials/popups/peer";
 @use "partials/popups/stickers";
 @use "partials/popups/datePicker";
@@ -112,7 +113,6 @@
 @use "partials/popups/confirmation";
 @use "partials/popups/translate";
 @use "partials/popups/reportAd";
-@use "partials/popups/aboutAd";
 @use "partials/popups/deleteMegagroupMessages";
 @use "partials/popups/stars";
 @use "partials/popups/makePaid";

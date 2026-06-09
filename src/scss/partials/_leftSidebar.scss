@@ -271,7 +271,7 @@
     }
   }
 
-  @include respond-to(before-medium-screens) {
+  @include respond-to(until-floating-left-sidebar) {
     flex: var(--left-column-visual-width) 2 auto;
   }
 
@@ -883,6 +883,45 @@
   }
 }
 
+// Public (fallback) photo: the remove row shows the set photo as its media; an
+// upload overlays a dark scrim + a small centered progress ring (click cancels).
+.privacy-public-photo-remove {
+  .row-title {
+    color: var(--danger-color);
+  }
+
+  &.row-clickable {
+    @include hover-background-effect(red);
+  }
+
+  .row-media {
+    position: relative;
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: 50%;
+  }
+
+  &.is-uploading {
+    .row-media::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background-color: rgba(0, 0, 0, .45);
+      z-index: 2;
+    }
+
+    .preloader-container {
+      position: absolute;
+      inset: 0;
+      margin: auto;
+      width: 1.75rem;
+      height: 1.75rem;
+      z-index: 3;
+    }
+  }
+}
+
 .active-sessions-container {
   .row {
     // margin-top: 0;
@@ -997,6 +1036,24 @@
         transition: opacity .2s ease-in-out;
       }
 
+      $media-corner-radius: calc(#{$border-radius-big} - 4px);
+      &.is-corner-tl {
+        &:after { border-top-left-radius: $border-radius-big; }
+        .grid-item-media { border-top-left-radius: $media-corner-radius; }
+      }
+      &.is-corner-tr {
+        &:after { border-top-right-radius: $border-radius-big; }
+        .grid-item-media { border-top-right-radius: $media-corner-radius; }
+      }
+      &.is-corner-bl {
+        &:after { border-bottom-left-radius: $border-radius-big; }
+        .grid-item-media { border-bottom-left-radius: $media-corner-radius; }
+      }
+      &.is-corner-br {
+        &:after { border-bottom-right-radius: $border-radius-big; }
+        .grid-item-media { border-bottom-right-radius: $media-corner-radius; }
+      }
+
       &.active {
         &:after {
           opacity: 1;
@@ -1004,6 +1061,7 @@
 
         .grid-item-media {
           transform: scale(.91);
+          overflow: hidden; // clip the canvas to the rounded corner
         }
       }
 

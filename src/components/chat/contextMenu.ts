@@ -47,7 +47,7 @@ import Icon from '@components/icon';
 import cloneDOMRect from '@helpers/dom/cloneDOMRect';
 import PopupPremium from '@components/popups/premium';
 import {ChatInputReplyTo} from '@components/chat/input';
-import {FullMid, makeFullMid, TEST_BUBBLES_DELETION} from '@components/chat/bubbles';
+import {makeFullMid, TEST_BUBBLES_DELETION} from '@components/chat/bubbles';
 import AppStatisticsTab from '@components/sidebarRight/tabs/statistics';
 import {ChatType} from './chatType';
 import {formatFullSentTime} from '@helpers/date';
@@ -56,17 +56,16 @@ import rootScope from '@lib/rootScope';
 import ReactionElement from '@components/chat/reaction';
 import InputField from '@components/inputField';
 import getMainGroupedMessage from '@appManagers/utils/messages/getMainGroupedMessage';
-import PopupTranslate from '@components/popups/translate';
+import showTranslatePopup from '@components/popups/translate';
 import getRichSelection from '@helpers/dom/getRichSelection';
 import detectLanguageForTranslation from '@helpers/detectLanguageForTranslation';
 import wrapRichText from '@lib/richTextProcessor/wrapRichText';
 import documentFragmentToHTML from '@helpers/dom/documentFragmentToHTML';
-import PopupReportAd from '@components/popups/reportAd';
-import PopupAboutAd from '@components/popups/aboutAd';
+import {showAdReport, showMessageReport} from '@components/popups/reportAd';
+import showAboutAdPopup from '@components/popups/aboutAd';
 import getRichValueWithCaret from '@helpers/dom/getRichValueWithCaret';
 import deepEqual from '@helpers/object/deepEqual';
 import wrapDraftText from '@lib/richTextProcessor/wrapDraftText';
-import flatten from '@helpers/array/flatten';
 import PopupStarReaction from '@components/popups/starReaction';
 import getUniqueCustomEmojisFromMessage from '@appManagers/utils/messages/getUniqueCustomEmojisFromMessage';
 import getPeerTitle from '@components/wrappers/getPeerTitle';
@@ -88,7 +87,7 @@ import isNodeFullyInsideRange from '@helpers/dom/isNodeFullyInsideRange';
 import parseEntities from '@lib/richTextProcessor/parseEntities';
 import {concatTextsWithEntities} from '@lib/richTextProcessor/concatTextsWithEntities';
 import {shouldShufflePollOptions, shufflePollOptions} from './bubbleParts/pollMessageContent/shuffle';
-import {truncateTextWithEntities} from '@helpers/string/truncateTextWithEntities';
+import {truncateTextWithEntities} from '@lib/richTextProcessor/truncateTextWithEntities';
 import {pollOptionToLink} from './bubbleParts/pollMessageContent/pollToOptionLink';
 
 type ChatContextMenuButton = ButtonMenuItemOptions & {
@@ -128,7 +127,7 @@ export function getSponsoredMessageButtons(options: {
       icon: 'info',
       text: 'AboutRevenueSharingAds',
       onClick: () => {
-        PopupElement.createPopup(PopupAboutAd);
+        showAboutAdPopup();
       },
       verify: () => extraVerify() && !!canReport,
       isSponsored: true
@@ -954,7 +953,7 @@ export default class ChatContextMenu {
             textWithEntities = await this.getPollTextWithEntities(message);
           }
 
-          PopupElement.createPopup(PopupTranslate, {
+          showTranslatePopup({
             peerId: textWithEntities ? peerId : message.peerId,
             textWithEntities,
             message: textWithEntities ? undefined : message as Message.message,
@@ -1049,7 +1048,7 @@ export default class ChatContextMenu {
       icon: 'flag',
       text: 'ReportChat',
       onClick: () => {
-        PopupReportAd.createMessageReport(this.messagePeerId, [this.mid]);
+        showMessageReport(this.messagePeerId, [this.mid]);
       },
       verify: () => !this.message.pFlags.out &&
         this.message._ === 'message' &&
@@ -1122,7 +1121,7 @@ export default class ChatContextMenu {
       extraVerify: () => this.isSponsored,
       handleReportAd: () => {
         const {peerId, mid} = this.message;
-        PopupReportAd.createAdReport(this.sponsoredMessage, () => {
+        showAdReport(this.sponsoredMessage, () => {
           this.chat.bubbles.deleteMessagesByIds([makeFullMid(peerId, mid)], true)
         });
       },
@@ -1632,28 +1631,26 @@ export default class ChatContextMenu {
       return;
     }
 
-    let fullMids: FullMid[];
-    if(!this.chat.selection.isSelecting) {
+    let rawMessages: (Message.message | SponsoredMessage.sponsoredMessage)[];
+    if(this.isSponsored) {
+      rawMessages = [this.sponsoredMessage];
+    } else if(!this.chat.selection.isSelecting) {
       const message = this.getMessageWithText();
       if(!message) {
         return;
       }
 
-      fullMids = [makeFullMid(message.peerId, message.mid)];
+      rawMessages = [message as Message.message];
     } else {
-      const v = [...this.chat.selection.selectedMids.entries()];
-      const f = v.map(([peerId, mids]) => [...mids].map((mid) => makeFullMid(peerId, mid)));
-      fullMids = flatten(f);
+      // read selected messages from their own (scheduled vs history) storage; re-fetching by a
+      // bare id resolves against history/global and can pull a same-id message from another peer
+      // (e.g. copying in Scheduled would grab a message from a different chat)
+      rawMessages = await this.chat.selection.getSelectedMessages() as Message.message[];
     }
 
-    let rawMessages: (Message.message | SponsoredMessage.sponsoredMessage)[];
-    if(this.isSponsored) {
-      rawMessages = [this.sponsoredMessage];
-    } else {
-      rawMessages = fullMids.map((fullMid) => this.chat.getMessage(fullMid) as Message.message);
-    }
-
-    const messages = rawMessages.filter((message) => message?.message) as Message.message[];
+    // sort by send time so the copied text follows the chronological order, not the selection order (#357)
+    const messages = (rawMessages.filter((message) => message?.message) as Message.message[])
+    .sort((a, b) => a.date - b.date || a.mid - b.mid);
     const meta = messages.length > 1 ? await Promise.all(messages.map(async(message) => {
       const peerTitle = await getPeerTitle({
         peerId: message.fromId,

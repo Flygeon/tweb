@@ -26,12 +26,12 @@ import PopupPremium from '@components/popups/premium';
 import PopupSendGift from '@components/popups/sendGift';
 import showStarsRatingPopup from '@components/popups/starsRating';
 import PopupToggleReadDate from '@components/popups/toggleReadDate';
-import PopupTranslate from '@components/popups/translate';
+import showTranslatePopup from '@components/popups/translate';
 import {setQuizHint} from '@components/quizHint';
 import Row from '@components/rowTsx';
 import appSidebarLeft from '@components/sidebarLeft';
-import AppChatFoldersTab from '@components/sidebarLeft/tabs/chatFolders';
-import AppEditFolderTab from '@components/sidebarLeft/tabs/editFolder';
+import {AppChatFoldersTab} from '@components/solidJsTabs/tabs';
+import {AppEditFolderTab} from '@components/solidJsTabs/tabs';
 import appSidebarRight from '@components/sidebarRight';
 import AppPollResultsTab from '@components/sidebarRight/tabs/pollResults';
 import Slideshow from '@components/slideshow'; // Added import
@@ -96,7 +96,7 @@ export default function SolidJSHotReloadGuardProvider(props: ParentProps) {
       i18n,
       join,
       PopupElement,
-      PopupTranslate,
+      showTranslatePopup,
       PopupToggleReadDate,
       wrapSticker,
       wrapTopicNameButton,

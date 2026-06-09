@@ -84,6 +84,7 @@ import getPeerId from '@appManagers/utils/peers/getPeerId';
 import {AppManagers} from '@lib/managers';
 import idleController from '@helpers/idleController';
 import overlayCounter from '@helpers/overlayCounter';
+import ReadMetricsTracker from '@helpers/readMetricsTracker';
 import {cancelContextMenuOpening} from '@helpers/dom/attachContextMenuListener';
 import contextMenuController from '@helpers/contextMenuController';
 import {AckedResult} from '@lib/superMessagePort';
@@ -158,7 +159,7 @@ import TranslatableMessage from '@components/translatableMessage';
 import getUnreadReactions from '@appManagers/utils/messages/getUnreadReactions';
 import {setPeerLanguageLoaded} from '@stores/peerLanguage';
 import ButtonIcon from '@components/buttonIcon';
-import PopupAboutAd from '@components/popups/aboutAd';
+import showAboutAdPopup from '@components/popups/aboutAd';
 import numberThousandSplitter, {numberThousandSplitterForStars} from '@helpers/number/numberThousandSplitter';
 import wrapGeo from '@components/wrappers/geo';
 import safePlay from '@helpers/dom/safePlay';
@@ -195,6 +196,7 @@ import addSuggestedPostServiceMessage, {checkIfNotMePosted} from '@components/ch
 import addSuggestedPostReplyMarkup, {canHaveSuggestedPostReplyMarkup} from '@components/chat/bubbleParts/suggestedPostReplyMarkup';
 import type {SeparatorIntersectorRoot} from '@components/chat/bubbleParts/chatThreadSeparator';
 import BotforumNewTopic from '@components/chat/bubbleParts/botforumNewTopic';
+import wrapServiceMediaBubble from '@components/chat/bubbleParts/serviceMediaBubble';
 import type {wrapContinuouslyTypingMessage} from '@components/chat/bubbleParts/continuouslyTypingMessage';
 import addContinueLastTopicReplyMarkup from '@components/chat/bubbleParts/continueLastTopicReplyMarkup';
 import {createInlineReplyMarkup} from '@components/chat/bubbleParts/replyMarkupLayout';
@@ -267,6 +269,23 @@ export const SERVICE_AS_REGULAR: Set<MESSAGE_ACTION_TYPE> = new Set();
 if(IS_CALL_SUPPORTED) {
   SERVICE_AS_REGULAR.add('messageActionPhoneCall');
 }
+
+// Service actions whose inline photo (suggested profile photo, or a group/channel
+// avatar change) is shown via wrapServiceMediaBubble. `filter`/`useSearch` drive
+// the media-viewer opened on click; `suggest` adds the receiving-side accept flow.
+// (Keys include the tweb pseudo-types saveMessages renames messageActionChatEditPhoto
+// into for broadcast / video variants — hence Set<string>/string keys.)
+const PHOTO_BUBBLE_ACTIONS: {[action: string]: {
+  filter: 'inputMessagesFilterPhotoVideo' | 'inputMessagesFilterChatPhotos',
+  useSearch?: boolean,
+  suggest?: boolean
+}} = {
+  messageActionSuggestProfilePhoto: {filter: 'inputMessagesFilterPhotoVideo', useSearch: false, suggest: true},
+  messageActionChatEditPhoto: {filter: 'inputMessagesFilterChatPhotos'},
+  messageActionChannelEditPhoto: {filter: 'inputMessagesFilterChatPhotos'},
+  messageActionChatEditVideo: {filter: 'inputMessagesFilterChatPhotos'},
+  messageActionChannelEditVideo: {filter: 'inputMessagesFilterChatPhotos'}
+};
 
 // const TEST_SCROLL_TIMES: number = undefined;
 // let TEST_SCROLL = TEST_SCROLL_TIMES;
@@ -560,6 +579,14 @@ export default class ChatBubbles {
 
   private viewsMids: Set<FullMid> = new Set();
   private sendViewCountersDebounced: () => Promise<void>;
+
+  // Post engagement metrics (messages.reportReadMetrics). `readMetricsBubbles` maps each tracked
+  // channel-post bubble currently overlapping the viewport to its mid; the tracker is driven with
+  // a fresh visibility batch on scroll/resize/intersection changes.
+  private readMetricsTracker: ReadMetricsTracker;
+  private readMetricsBubbles: Map<HTMLElement, number> = new Map();
+  private updateReadMetricsBatchScheduled: boolean;
+  private lastReadMetricsActivity = 0;
 
   private isTopPaddingSet = false;
 
@@ -1017,7 +1044,7 @@ export default class ChatBubbles {
       this.setBubbleSendingStatus(bubble, 'error');
 
       const message = apiManagerProxy.getMessageById(+bubble.dataset.mid);
-      if(!('repayRequest' in message) || !message.repayRequest) return;
+      if(!message || !('repayRequest' in message) || !message.repayRequest) return;
 
       const serviceMsgText = bubble.querySelector('.service-msg-i18n-element');
       if(!serviceMsgText) return;
@@ -1849,6 +1876,8 @@ export default class ChatBubbles {
       });
     }, 1000, false, true);
 
+    this.setupReadMetrics();
+
     // * pinned part start
     this.listenerSetter.add(rootScope)('peer_pinned_messages', ({peerId, mids, pinned}) => {
       if(this.chat.type !== ChatType.Pinned || peerId !== this.peerId) {
@@ -1991,6 +2020,98 @@ export default class ChatBubbles {
     }
   };
 
+  private setupReadMetrics() {
+    this.readMetricsTracker = new ReadMetricsTracker(({peerId, metric}) => {
+      this.managers.appMessagesManager.reportReadMetrics(peerId, metric);
+    });
+
+    const updateScreenActive = () => {
+      // Paused while another chat is pushed on top of this one, or a dark overlay (media viewer) covers it.
+      this.readMetricsTracker.setScreenActive(this.chat.appImManager.chat === this.chat && !overlayCounter.isOverlayActive);
+    };
+    updateScreenActive();
+
+    const updateAppActive = () => {
+      // Foreground = tab visible and window focused.
+      this.readMetricsTracker.setAppActive(!document.hidden && document.hasFocus());
+    };
+    updateAppActive();
+
+    this.listenerSetter.add(document)('visibilitychange', updateAppActive);
+    this.listenerSetter.add(window)('blur', updateAppActive);
+    this.listenerSetter.add(window)('focus', updateAppActive);
+    this.listenerSetter.add(this.chat.appImManager)('chat_changing', updateScreenActive);
+    this.listenerSetter.add(overlayCounter)('change', updateScreenActive);
+
+    const activityEvents: (keyof HTMLElementEventMap)[] = ['pointermove', 'pointerdown', 'touchstart', 'touchmove', 'wheel', 'keydown'];
+    activityEvents.forEach((event) => {
+      this.listenerSetter.add(this.chat.container)(event, this.registerReadMetricsActivity, {passive: true});
+    });
+  }
+
+  private registerReadMetricsActivity = () => {
+    const now = Date.now();
+    if(now - this.lastReadMetricsActivity < 1000) { // throttle: the activity window is 15s, so 1s granularity is plenty
+      return;
+    }
+
+    this.lastReadMetricsActivity = now;
+    this.readMetricsTracker?.registerActivity();
+  };
+
+  private readMetricsObserverCallback = (entry: IntersectionObserverEntry) => {
+    const bubble = entry.target as HTMLElement;
+    if(entry.isIntersecting) {
+      if(!this.readMetricsBubbles.has(bubble)) {
+        const fullMid = getBubbleFullMid(bubble);
+        if(!fullMid) {
+          return;
+        }
+
+        this.readMetricsBubbles.set(bubble, splitFullMid(fullMid).mid);
+      }
+    } else {
+      this.readMetricsBubbles.delete(bubble);
+    }
+
+    this.scheduleReadMetricsBatch();
+  };
+
+  private scheduleReadMetricsBatch() {
+    if(this.updateReadMetricsBatchScheduled || !this.readMetricsTracker) {
+      return;
+    }
+
+    this.updateReadMetricsBatchScheduled = true;
+    fastRaf(() => {
+      this.updateReadMetricsBatchScheduled = false;
+      this.updateReadMetricsBatch();
+    });
+  }
+
+  private updateReadMetricsBatch() {
+    const tracker = this.readMetricsTracker;
+    if(!tracker || !this.scrollable) {
+      return;
+    }
+
+    const rect = this.scrollable.container.getBoundingClientRect();
+    tracker.startBatch(this.peerId, rect.top, rect.bottom);
+    this.readMetricsBubbles.forEach((mid, bubble) => {
+      if(!bubble.isConnected) {
+        return;
+      }
+
+      const bubbleRect = bubble.getBoundingClientRect();
+      if(bubbleRect.bottom <= rect.top || bubbleRect.top >= rect.bottom) { // no overlap (observer lagged a fast scroll)
+        return;
+      }
+
+      tracker.push(mid, bubbleRect.top, bubbleRect.height);
+    });
+    tracker.endBatch();
+  }
+
   private _stickerEffectObserverCallback = (entry: IntersectionObserverEntry, callback: IntersectionCallback, selector: string) => {
     if(entry.isIntersecting) {
       this.observer.unobserve(entry.target, callback);
@@ -2047,6 +2168,8 @@ export default class ChatBubbles {
       part = 0;
       resizing = false;
       skip = false;
+
+      this.scheduleReadMetricsBatch(); // viewport height changed -> recompute height ratios / visibility
     };
 
     const setEndRAF = (single: boolean) => {
@@ -3589,6 +3712,10 @@ export default class ChatBubbles {
     this.updateGoDownVisibility();
 
     this.checkIntersectingVideos();
+
+    // Recompute visible ranges (also on programmatic scroll); user-activity is fed only by real
+    // input events, so the scroll handler intentionally does NOT register activity here.
+    this.scheduleReadMetricsBatch();
   };
 
   private checkIntersectingVideos() {
@@ -3811,6 +3938,9 @@ export default class ChatBubbles {
 
       this.observer.unobserve(bubble, this.viewsObserverCallback);
       this.viewsMids.delete(fullMid);
+
+      this.observer.unobserve(bubble, this.readMetricsObserverCallback);
+      this.readMetricsBubbles.delete(bubble);
 
       this.observer.unobserve(bubble, this.stickerEffectObserverCallback);
       this.observer.unobserve(bubble, this.messageEffectObserverCallback);
@@ -4074,6 +4204,16 @@ export default class ChatBubbles {
 
     const middleware = this.getMiddleware();
     const {isPaddingNeeded, unsetPadding} = this.setTopPadding(middleware);
+
+    if(scrolledDown) {
+      // A forward/reply send collapses the input helper, kicking off
+      // chat.preservePaddingScroll() — a 250ms loop pinning the view to the absolute
+      // bottom every frame. That pin would follow the new bubble down instantly,
+      // leaving the animated scrollToEnd() below with nothing to animate (no reveal,
+      // most visibly when forwarding a tall message). Cancel it before the new bubble
+      // inflates scrollHeight so the reveal animation owns the scroll.
+      this.chat.cancelPreservePaddingScroll();
+    }
 
     const promise = this.performHistoryResult({history: [message]}, false);
     if(scrolledDown) {
@@ -4357,6 +4497,8 @@ export default class ChatBubbles {
   public destroy() {
     // this.chat.log.error('Bubbles destroying');
 
+    this.readMetricsTracker?.finalizeAll();
+
     this.destroyScrollable();
 
     this.listenerSetter.removeAll();
@@ -4385,6 +4527,10 @@ export default class ChatBubbles {
 
   public cleanup(bubblesToo = false) {
     this.log('cleanup');
+
+    // Content is about to be wiped (peer switch / screen teardown) — end every read-metrics phase.
+    this.readMetricsTracker?.finalizeAll();
+    this.readMetricsBubbles.clear();
 
     this.bubbles = {}; // clean it before so sponsored message won't be deleted faster on peer changing
     // //console.time('appImManager cleanup');
@@ -6256,6 +6402,56 @@ export default class ChatBubbles {
             }), middleware);
             contentWrapper.append(buttons);
           }
+        } else if(
+          PHOTO_BUBBLE_ACTIONS[action._] &&
+          (action as MessageAction.messageActionChatEditPhoto).photo?._ === 'photo'
+        ) {
+          // Suggested profile photo, or a group/channel avatar change — show the
+          // photo inline (animated avatars play their looping video). Clicking
+          // opens the media viewer; for an incoming suggestion it opens the editor
+          // to set it as our own profile photo + toast.
+          const cfg = PHOTO_BUBBLE_ACTIONS[action._];
+          const photo = (action as MessageAction.messageActionChatEditPhoto).photo as Photo.photo;
+          const isOutgoing = !!message.pFlags.out;
+
+          const openViewer = () => {
+            const mediaEl = s.querySelector<HTMLElement>(
+              '.bubble-service-media-avatar-container img, .bubble-service-media-avatar-container canvas, .bubble-service-media-avatar-container video'
+            );
+            new AppMediaViewer()
+            .setSearchContext({peerId: message.peerId, inputFilter: {_: cfg.filter}, useSearch: cfg.useSearch})
+            .openMedia({message: message as Message.messageService, target: mediaEl || undefined});
+          };
+
+          // Receiving side of a suggestion: open it in the editor, set the result
+          // as our own profile photo + toast. Otherwise just view it.
+          const acceptSuggestion = () => {
+            import('@components/avatarEdit').then(({editAndSetOwnAvatar}) => editAndSetOwnAvatar({
+              managers: this.managers,
+              photo,
+              onUploaded: () => toastNew({langPackKey: 'UserInfo.SuggestedPhotoApplied'})
+            }));
+          };
+
+          const onMediaClick = (cfg.suggest && !isOutgoing) ? acceptSuggestion : openViewer;
+          const button: Parameters<typeof wrapServiceMediaBubble>[0]['button'] = cfg.suggest ? {
+            text: isOutgoing ? 'UserInfo.SuggestedPhotoView' : 'UserInfo.SetPhotoTitle',
+            onClick: onMediaClick
+          } : undefined;
+
+          const caption = await wrapMessageActionTextNew({message, ...wrapOptions});
+
+          const {loadPromise} = wrapServiceMediaBubble({
+            container: s,
+            middleware,
+            lazyLoadQueue: this.lazyLoadQueue,
+            listenerSetter: this.listenerSetter,
+            photo,
+            caption,
+            onMediaClick,
+            button
+          });
+          loadPromises.push(loadPromise);
         } else {
           promise = wrapMessageActionTextNew({
             message,
@@ -6964,6 +7160,11 @@ export default class ChatBubbles {
 
       if(!message.pFlags.is_outgoing && this.observer) {
         this.observer.observe(bubble, this.viewsObserverCallback);
+
+        // Engagement metrics only for the main channel feed (not preview/pinned/search/scheduled views).
+        if(this.chat.type === ChatType.Chat && !this.chat.isPreview) {
+          this.observer.observe(bubble, this.readMetricsObserverCallback);
+        }
       }
     }
 
@@ -7433,7 +7634,7 @@ export default class ChatBubbles {
                 content: i18n('SponsoredMessageAdWhatIsThis'),
                 onClick: (e) => {
                   cancelEvent(e);
-                  PopupElement.createPopup(PopupAboutAd);
+                  showAboutAdPopup();
                 }
               }
             };

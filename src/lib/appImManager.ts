@@ -1,4 +1,5 @@
 import type {GroupCallId, MyGroupCall} from '@appManagers/appGroupCallsManager';
+import type {ApiLimitType} from '@appManagers/apiManagerMethods';
 import type GroupCallInstance from '@lib/calls/groupCallInstance';
 import type CallInstance from '@lib/calls/callInstance';
 import animationIntersector from '@components/animationIntersector';
@@ -18,7 +19,7 @@ import {doubleRaf} from '@helpers/schedulers';
 import useHeavyAnimationCheck, {dispatchHeavyAnimationEvent} from '@hooks/useHeavyAnimationCheck';
 import {MOUNT_CLASS_TO} from '@config/debug';
 import appNavigationController, {USE_NAVIGATION_API} from '@components/appNavigationController';
-import AppPrivateSearchTab from '@components/sidebarRight/tabs/search';
+import {AppPrivateSearchTab} from '@components/solidJsTabs/tabs';
 import I18n, {i18n, join, LangPackKey} from '@lib/langPack';
 import {ChatFull, ChatParticipants, Game, Message, MessageAction, MessageMedia, SendMessageAction, User, Chat as MTChat, UrlAuthResult, WallPaper, Config, AttachMenuBot, Peer, InputChannel, HelpPeerColors, Reaction, Document, MessageEntity, PeerColor, SponsoredMessage, InputGroupCall, WebPage} from '@layer';
 import PeerTitle from '@components/peerTitle';
@@ -30,7 +31,7 @@ import replaceContent from '@helpers/dom/replaceContent';
 import whichChild from '@helpers/dom/whichChild';
 import PopupElement from '@components/popups';
 import singleInstance from '@lib/singleInstance';
-import {toastNew} from '@components/toast';
+import {hideToast, toastNew} from '@components/toast';
 import debounce from '@helpers/schedulers/debounce';
 import pause from '@helpers/schedulers/pause';
 import MEDIA_MIME_TYPES_SUPPORTED from '@environment/mediaMimeTypesSupport';
@@ -127,6 +128,7 @@ import PaidMessagesInterceptor, {PAYMENT_REJECTED} from '@components/chat/paidMe
 import IS_WEB_APP_BROWSER_SUPPORTED from '@environment/webAppBrowserSupport';
 import createChatAudio, {ChatAudioController} from '@components/chat/audio';
 import AudioAssetPlayer from '@helpers/audioAssetPlayer';
+import {useAppSettings} from '@stores/appSettings';
 import {MyMessage} from '@appManagers/appMessagesManager';
 import {canUploadAsWhenEditing} from '@components/chat/utils';
 import getPeerActiveUsernames from '@appManagers/utils/peers/getPeerActiveUsernames';
@@ -240,6 +242,26 @@ export class AppImManager extends EventListenerBase<{
     return this.chats[this.chats.length - 1];
   }
 
+  private showLimitReplacedToast(limitType: ApiLimitType, subtitleKey: LangPackKey, subtitlePremiumKey: LangPackKey) {
+    if(rootScope.premium) {
+      toastNew({langPackKey: subtitlePremiumKey});
+      return;
+    }
+
+    this.managers.apiManager.getLimit(limitType, true).then((limitPremium) => {
+      toastNew({
+        langPackKey: subtitleKey,
+        langPackArguments: [
+          anchorCallback(() => {
+            hideToast();
+            PopupPremium.show({feature: 'double_limits'});
+          }),
+          limitPremium
+        ]
+      });
+    });
+  }
+
   public construct(managers: AppManagers) {
     this.managers = managers;
     internalLinkProcessor.construct(managers);
@@ -317,6 +339,7 @@ export class AppImManager extends EventListenerBase<{
     });
 
     themeController.AppBackgroundTab = AppBackgroundTab;
+    themeController.appChatBackground = appChatBackground;
 
     if(IS_FIREFOX && apiManagerProxy.oldVersion && compareVersion(apiManagerProxy.oldVersion, '1.4.3') === -1) {
       this.deleteFilesIterative((response) => {
@@ -365,6 +388,10 @@ export class AppImManager extends EventListenerBase<{
     }, {once: true});
 
     rootScope.addEventListener('theme_changed', () => {
+      // When the active chat pins its own per-chat theme/wallpaper it re-publishes its own
+      // day/night variant via Chat._handleBackgrounds. `applyCurrentTheme` re-applies the *global*
+      // background, which would race and clobber the per-chat one — so defer to the chat here.
+      if(this.chat?.currentTheme || this.chat?.currentWallPaper) return;
       this.applyCurrentTheme({
         broadcastEvent: true,
         noSetTheme: true,
@@ -627,8 +654,13 @@ export class AppImManager extends EventListenerBase<{
       });
     });
 
-    rootScope.addEventListener('sticker_updated', ({type, faved}) => {
+    rootScope.addEventListener('sticker_updated', ({type, faved, limitReached}) => {
       if(type === 'faved') {
+        if(faved && limitReached) {
+          this.showLimitReplacedToast('favedStickers', 'LimitReachedFavoriteStickersSubtitle', 'LimitReachedFavoriteStickersSubtitlePremium');
+          return;
+        }
+
         toastNew({
           langPackKey: faved ? 'AddedToFavorites' : 'RemovedFromFavorites'
         });
@@ -639,7 +671,12 @@ export class AppImManager extends EventListenerBase<{
       }
     });
 
-    rootScope.addEventListener('gif_updated', ({saved}) => {
+    rootScope.addEventListener('gif_updated', ({saved, limitReached}) => {
+      if(saved && limitReached) {
+        this.showLimitReplacedToast('gifs', 'LimitReachedFavoriteGifsSubtitle', 'LimitReachedFavoriteGifsSubtitlePremium');
+        return;
+      }
+
       toastNew({langPackKey: saved ? 'GifSavedHint' : 'RemovedGIFFromFavorites'});
     });
 
@@ -687,7 +724,8 @@ export class AppImManager extends EventListenerBase<{
     });
 
     rootScope.addEventListener('message_sent', () => {
-      if(!rootScope.settings.notifications.sentMessageSound) {
+      const [appSettings] = useAppSettings();
+      if(!appSettings.notifications.sentMessageSound) {
         return;
       }
 
@@ -792,7 +830,7 @@ export class AppImManager extends EventListenerBase<{
     //   openInstantViewInAppBrowser(((message as Message.message).media as MessageMedia.messageMediaWebPage).webpage as WebPage.webPage);
     // }, 100);
 
-    // PopupElement.createPopup(PopupAboutAd);
+    // showAboutAdPopup();
 
     // PopupElement.createPopup(PopupBoostsViaGifts, -5000866300);
 
@@ -1321,7 +1359,7 @@ export class AppImManager extends EventListenerBase<{
   }
 
   private attachKeydownListener() {
-    const IGNORE_KEYS = new Set(['PageUp', 'PageDown', 'Meta', 'Control']);
+    const IGNORE_KEYS = new Set(['Meta', 'Control']);
     const onKeyDown = async(e: KeyboardEvent) => {
       const key = e.key;
       const isSelectionCollapsed = document.getSelection().isCollapsed;
@@ -1341,11 +1379,27 @@ export class AppImManager extends EventListenerBase<{
 
       const chat = this.chat;
 
+      // Hand keyboard focus to the bubbles scroll container so the browser scrolls it natively.
+      // (overflow:auto + outline:none → focus is invisible.)
+      const handoffScroll = () => {
+        const container = chat?.bubbles?.scrollable?.container;
+        if(container && document.activeElement !== container) {
+          container.focus({preventScroll: true});
+        }
+      };
+
       if(this.isShiftLockShortcut && e.shiftKey) return;
 
       if((key.startsWith('Arrow') || (e.shiftKey && key === 'Shift')) && !isSelectionCollapsed) {
         return;
       } else if(e.code === 'KeyC' && (e.ctrlKey || e.metaKey) && !isTargetAnInput) {
+        return;
+      } else if(
+        (key === 'PageUp' || key === 'PageDown') &&
+        !isTargetAnInput &&
+        !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
+      ) {
+        handoffScroll();
         return;
       } else if(e.altKey && (key === 'ArrowUp' || key === 'ArrowDown')) {
         cancelEvent(e);
@@ -1360,6 +1414,13 @@ export class AppImManager extends EventListenerBase<{
         });
         return;
       } else if((key === 'ArrowUp' || key === 'ArrowDown') && this.chat?.type !== ChatType.Scheduled) {
+        // In chats/channels where the user can't post (read-only broadcasts, restricted groups,
+        // unjoined chats), there's no message to edit, so let ArrowUp/Down scroll the chat instead.
+        if(chat?.input && !chat.input.canSendPlain()) {
+          handoffScroll();
+          return;
+        }
+
         if(
           !appDialogsManager.contextMenu?.hasAddToFolderOpen() &&
           !chat?.input?.editMsgId
@@ -2084,7 +2145,8 @@ export class AppImManager extends EventListenerBase<{
   }
 
   private setSettings = () => {
-    const {messagesTextSize} = rootScope.settings;
+    const [appSettings] = useAppSettings();
+    const {messagesTextSize} = appSettings;
 
     this.customEmojiSize = makeMediaSize(messagesTextSize + 4, messagesTextSize + 4);
     document.documentElement.style.setProperty('--messages-text-size', messagesTextSize + 'px');
@@ -2120,13 +2182,13 @@ export class AppImManager extends EventListenerBase<{
     }, liteMode.isAvailable('animations') ? 250 : 0, false, true);
 
     const c: LiteModeKey[] = ['stickers_chat', 'stickers_panel'];
-    const changedLoop = animationIntersector.setLoop(rootScope.settings.stickers.loop);
+    const changedLoop = animationIntersector.setLoop(appSettings.stickers.loop);
     const changedAutoplay = !!c.filter((key) => animationIntersector.setAutoplay(liteMode.isAvailable(key), key)).length;
     if(changedLoop || changedAutoplay) {
       animationIntersector.checkAnimations2(false);
     }
 
-    I18n.setTimeFormat(rootScope.settings.timeFormat);
+    I18n.setTimeFormat(appSettings.timeFormat);
 
     this.toggleChatGradientAnimation(this.chat);
   };
@@ -2320,6 +2382,7 @@ export class AppImManager extends EventListenerBase<{
         });
       } else {
         counter = 0;
+        clearTimeout(dragTimeout);
         clearLastDialogElement();
       }
 
@@ -2332,6 +2395,7 @@ export class AppImManager extends EventListenerBase<{
     }); */
 
     let counter = 0;
+    let dragTimeout: number;
     document.body.addEventListener('dragenter', (e) => {
       debug && log('dragenter', e, counter);
       ++counter;
@@ -2341,6 +2405,18 @@ export class AppImManager extends EventListenerBase<{
       debug && log('dragover', e/* , e.dataTransfer.types[0] */);
       toggle(e, true);
       cancelEvent(e);
+
+      // 'dragover' keeps firing (at least every ~350ms) while a drag is held over the
+      // page, and stops the instant the drag leaves the window or is released outside it.
+      // For an external file drag there is no in-document source, so neither 'drop' nor
+      // 'dragend' fires in that case — without this watchdog the overlay (and the
+      // body.is-dragging pointer-events lock) would stay stuck over the chat. Re-arm on
+      // every 'dragover' so a lapse force-hides it; a still-active drag re-shows it at once.
+      clearTimeout(dragTimeout);
+      dragTimeout = window.setTimeout(() => {
+        counter = 0;
+        toggle(e, false);
+      }, 500);
 
       const target = e.target as HTMLElement;
       const dialogElement = findUpClassName(target, 'chatlist-chat');
@@ -2553,7 +2629,9 @@ export class AppImManager extends EventListenerBase<{
   private spliceChats(fromIndex: number, justReturn = true, animate?: boolean, spliced?: Chat[]) {
     if(fromIndex >= this.chats.length) return;
 
-    const chatFrom = this.chat;
+    // When `spliced` is passed in, the caller already trimmed the stack (so `this.chat` is
+    // already the destination); the chat we're actually leaving is the top of `spliced`.
+    const chatFrom = spliced?.length ? spliced[spliced.length - 1] : this.chat;
     if(this.chats.length > 1 && justReturn) {
       this.dispatchEvent('peer_changing', this.chat);
     }
@@ -2579,7 +2657,10 @@ export class AppImManager extends EventListenerBase<{
 
     this.chatsSelectTab(chatTo, animate);
 
-    if(chatTo !== chatFrom && chatTo.peerId) {
+    // Re-publish the destination's background when returning to it — the chat we left may have
+    // applied its own theme/wallpaper to the global background. Skip when `justReturn` is false:
+    // the caller is rebuilding the stack and its recursive `setPeer` publishes the new background.
+    if(justReturn && chatTo !== chatFrom && chatTo.peerId) {
       chatTo.publishBackground(animate === false ? 'auto' : 'crossfade-backwards');
     }
 
